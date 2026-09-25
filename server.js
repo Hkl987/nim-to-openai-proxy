@@ -69,28 +69,29 @@ validateConfig();
 const MODEL_MAPPING = {
   'gpt-3.5-turbo': 'nvidia/nemotron-3-super-120b-a12b',
   'gpt-4': 'nvidia/nemotron-3-ultra-550b-a55b',
-  'gpt-3.5': 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning', // was qwen/qwen3.5-397b-a17b
+  'gpt-3.5': 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning',
   'gpt-4-turbo': 'moonshotai/kimi-k3',
   'claude-3-opus': 'google/diffusiongemma-26b-a4b-it',
   'claude-3-sonnet': 'openai/gpt-oss-20b',
-  'gemini-pro': 'nvidia/llama-3.1-nemotron-70b-instruct', // was nvidia/llama-3.3-nemotron-super-49b-v1.5
-  'gemini-turbo': 'nvidia/llama3-chatqa-1.5-70b', // was meta/llama-3.3-70b-instruct
-  'gpt-3.5o': 'nvidia/nemotron-3.5-lightning-30b-a3b', // was google/gemma-2b
-  'gpt-4-flash': 'deepseek-ai/deepseek-v4-flash-0731',
-  'gpt-4o': 'deepseek-ai/deepseek-v4-pro-0813',
-  'mistral': 'mistralai/mistral-large-2-instruct', // was mistralai/mistral-large-3-675b-instruct-2512
-  'mistral-turbo': 'nv-mistralai/mistral-nemo-12b-instruct', // was mistralai/mistral-medium-3.5-128b
-  'mistral-pro': 'mistralai/mistral-7b-instruct-v0.3', // was mistralai/mistral-small-4-119b-2603
+  'gemini-pro': 'nvidia/llama-3.1-nemotron-70b-instruct', 
+  'gemini-turbo': 'nvidia/llama3-chatqa-1.5-70b',
+  'gpt-3.5o': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+  'gpt-4-flash': 'deepseek-ai/deepseek-v4.1-flash',
+  'gpt-4o': 'deepseek-ai/deepseek-v4-pro-0813', // will be replaced by 4.1 pro when it releases, currently doesn't work
+  'mistral': 'mistralai/mistral-large-2-instruct', 
+  'mistral-turbo': 'nv-mistralai/mistral-nemo-12b-instruct',
+  'mistral-pro': 'mistralai/mistral-7b-instruct-v0.3', 
   'mistral-nemo': 'mistralai/mistral-nemotron',
-  'mistral-fast': 'nvidia/mistral-nemo-minitron-8b-8k-instruct', // was mistralai/ministral-14b-instruct-2512
+  'mistral-fast': 'nvidia/mistral-nemo-minitron-8b-8k-instruct', 
   'google-light': 'google/gemma-4-31b-it',
-  'google-lightest': 'meta/muse-glimmer-30b', // was google/gemma-2b
-  'google-lighter': 'poolside/laguna-xs-2.1', // was google/gemma-3-4b-it
-  'm3': 'minimaxai/minimax-m3'
+  'google-lightest': 'meta/muse-glimmer-30b',
+  'google-lighter': 'poolside/laguna-xs-2.1',
+  'glm-5.3': 'z-ai/glm-5.3',
+  'glm-flash': 'z-ai/glm-5-3-flash'
 };
 
 // Used when an unrecognized alias is requested. Must point at a live model.
-const DEFAULT_MODEL = 'google/gemma-4-31b-it';
+const DEFAULT_MODEL = 'google/diffusiongemma-26b-a4b-it';
 
 // Ordered by observed reliability/speed — an early failing model delays every fallback behind it.
 const FALLBACK_MODELS = [
@@ -569,219 +570,4 @@ app.post('/v1/chat/completions', async (req, res) => {
           console.error('[STREAM] Buffer overflow, destroying connection');
           safeWrite(res, `data: ${JSON.stringify({
             error: {
-              message: 'Stream buffer overflow',
-              type: 'stream_error'
-            }
-          })}\n\n`);
-          safeWrite(res, 'data: [DONE]\n\n');
-          res.end();
-          upstreamStream.destroy();
-          cleanup();
-          return;
-        }
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          processLine(line);
-        }
-      });
-
-      upstreamStream.on('end', () => {
-        buffer += decoder.end();
-        if (buffer.trim()) {
-          for (const line of buffer.split('\n')) {
-            processLine(line);
-          }
-        }
-
-        const flushedDelta = normalizer.flush();
-
-        const toolRecoveryLeftover = toolRecovery.flush();
-        if (toolRecoveryLeftover) {
-          console.warn('[TOOL_CALL_RECOVERY] Stream ended mid <tool_call> tag; flushing raw text instead of dropping it.');
-          flushedDelta.content = (flushedDelta.content || '') + toolRecoveryLeftover;
-        }
-
-        if (flushedDelta.content || flushedDelta.reasoning) {
-          let clientContent = '';
-
-          if (SHOW_REASONING && inlineReasoning) {
-            if (flushedDelta.reasoning && !reasoningOpen) {
-              clientContent += `<thinking>\n${flushedDelta.reasoning}`;
-              reasoningOpen = true;
-            } else if (flushedDelta.reasoning) {
-              clientContent += flushedDelta.reasoning;
-            }
-
-            if (flushedDelta.content && reasoningOpen) {
-              clientContent += `\n</thinking>\n\n${flushedDelta.content}`;
-              reasoningOpen = false;
-            } else if (flushedDelta.content) {
-              clientContent += flushedDelta.content;
-            }
-          } else {
-            clientContent = flushedDelta.content || '';
-          }
-
-          const finalChunk = { choices: [{ delta: {} }] };
-          if (clientContent) finalChunk.choices[0].delta.content = clientContent;
-
-          if (SHOW_REASONING && !inlineReasoning && flushedDelta.reasoning) {
-            finalChunk.choices[0].delta.reasoning = flushedDelta.reasoning;
-            finalChunk.choices[0].delta.reasoning_content = flushedDelta.reasoning;
-          }
-
-          if (Object.keys(finalChunk.choices[0].delta).length > 0) {
-            safeWrite(res, `data: ${JSON.stringify(finalChunk)}\n\n`);
-          }
-        }
-
-        // Close an inline <thinking> tag left open if the model was cut off mid-reasoning.
-        if (SHOW_REASONING && inlineReasoning && reasoningOpen) {
-          safeWrite(res, `data: ${JSON.stringify({ choices: [{ delta: { content: '\n</thinking>\n' } }] })}\n\n`);
-          reasoningOpen = false;
-        }
-
-        if (!doneSent) {
-          safeWrite(res, 'data: [DONE]\n\n');
-        }
-        streamEndedCleanly = true;
-        if (!res.writableEnded) {
-          res.end();
-        }
-        cleanup();
-      });
-
-      upstreamStream.on('error', err => {
-        console.error('[STREAM] Upstream error:', err.message);
-        if (!res.writableEnded) {
-          safeWrite(res, `data: ${JSON.stringify({
-            error: {
-              message: 'Stream interrupted by upstream error',
-              type: 'stream_error'
-            }
-          })}\n\n`);
-          safeWrite(res, 'data: [DONE]\n\n');
-          res.end();
-        }
-        cleanup();
-      });
-
-      req.on('close', () => {
-        const clientGone = req.destroyed || !res.writable;
-        if (!streamEndedCleanly && clientGone) {
-          console.warn('[STREAM] Client disconnected prematurely');
-        }
-        if (upstreamStream && !upstreamStream.destroyed && !streamEndedCleanly) {
-          upstreamStream.destroy();
-        }
-        cleanup();
-      });
-    } else {
-      const openaiResponse = {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        model: usedModel, // actual model that answered, may differ from the requested alias
-        created: Math.floor(Date.now() / 1000),
-        choices: (response.data.choices || []).map((choice, i) => {
-          const normalizedChoice = normalizeNonStreamChoice(choice, usedModel);
-          let content = normalizedChoice.message?.content || '';
-          const reasoning = normalizedChoice.message?.reasoning || '';
-
-          const { content: cleanedContent, toolCalls: recoveredToolCalls } = extractLeakedToolCalls(content);
-          content = cleanedContent;
-
-          if (SHOW_REASONING && inlineReasoning && reasoning) {
-            content = `<thinking>\n${reasoning}\n</thinking>\n\n${content}`;
-          }
-
-          const finalMessage = { ...normalizedChoice.message, content };
-
-          if (recoveredToolCalls.length > 0) {
-            finalMessage.tool_calls = [
-              ...(normalizedChoice.message?.tool_calls || []),
-              ...recoveredToolCalls
-            ];
-            // null content on tool-call turns matches real OpenAI responses
-            if (!finalMessage.content || !finalMessage.content.trim()) {
-              finalMessage.content = null;
-            }
-          }
-
-          if (SHOW_REASONING && reasoning) {
-            finalMessage.reasoning = reasoning;
-            finalMessage.reasoning_content = reasoning;
-          } else {
-            delete finalMessage.reasoning;
-            delete finalMessage.reasoning_content;
-          }
-
-          const finalChoice = {
-            ...normalizedChoice,
-            index: i,
-            message: finalMessage,
-            ...(recoveredToolCalls.length > 0 && { finish_reason: 'tool_calls' })
-          };
-          return finalChoice;
-        }),
-        usage: response.data.usage || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
-        }
-      };
-
-      res.json(openaiResponse);
-    }
-  } catch (error) {
-    console.error('[PROXY] Fatal error:', error.message);
-    console.error('[PROXY] NIM response:', error.response?.data);
-
-    if (!res.headersSent) {
-      // Express only sets Content-Type if unset; force JSON in case the
-      // streaming branch already set text/event-stream before failing.
-      res.set('Content-Type', 'application/json');
-      res.status(error.response?.status || 500).json({
-        error: {
-          message: error.message,
-          type: 'invalid_request_error',
-          code: error.response?.status || 500
-        }
-      });
-    } else if (!res.writableEnded) {
-      safeWrite(res, `data: ${JSON.stringify({
-        error: {
-          message: error.message,
-          type: 'proxy_error'
-        }
-      })}\n\n`);
-      safeWrite(res, 'data: [DONE]\n\n');
-      res.end();
-    }
-
-    if (upstreamStream && !upstreamStream.destroyed) {
-      upstreamStream.destroy();
-    }
-  }
-});
-
-app.use((req, res) => {
-  res.status(404).json({
-    error: {
-      message: `Endpoint ${req.method} ${req.path} not found`,
-      type: 'invalid_request_error',
-      code: 404
-    }
-  });
-});
-
-// ─── Startup ──────────────────────────────────────────────────────────────
-
-app.listen(PORT, () => {
-  console.log(`[PROXY] Hybrid proxy running on port ${PORT}`);
-  console.log(`[PROXY] Max tokens limit: ${MAX_TOKENS_LIMIT}`);
-  validateModels().catch(err => {
-    console.error('[VALIDATION] Startup check failed:', err.message);
-  });
-});
+   
